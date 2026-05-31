@@ -1,40 +1,62 @@
-# OSS First Mate
+# 🏴 OSS First Mate
 
-An AI-powered triage dashboard for open source maintainers. Enter any GitHub repo and get an instant view of what needs your attention — urgent issues, suspicious PRs, stale reviews, and duplicate reports — enriched with Claude AI insights pulled from GitHub, Slack, and Notion via [Coral](https://withcoral.com).
+> AI-powered triage dashboard for open source maintainers — built for the Pirates of the Coral-bean Hackathon (May 25–31, 2026).
 
-Built for the Pirates of the Coral-bean Hackathon (May 25–31, 2026).
+OSS First Mate helps maintainers cut through the noise. Enter any GitHub repo and get an instant health report: urgent issues, suspicious AI-generated PRs, stale pull requests, duplicate issue clusters, and relevant Slack activity — all surfaced by querying live data via Coral SQL and analyzed by Claude AI.
 
 ---
 
 ## Features
 
-- **Urgent issues** — surfaces open issues ranked by comment volume so the noisiest threads don't get buried
-- **AI Slop detection** — scores PRs for low-effort signals (vague descriptions, generic titles, high file scatter) and flags suspicious submissions
-- **Stale PR tracking** — lists pull requests that have been open more than 7 days without merge or close
-- **Duplicate clustering** — groups open issues with overlapping titles so you can close dupes in one pass
-- **Slack context** — pulls recent messages from your workspace channel to catch community signals that never made it into GitHub
-- **Claude AI insights** — synthesizes all of the above into a repo health score, a top priority for today, and a detected pattern callout
+- **Claude AI Insights** — repo health score (0–100), today's single top priority, and a detected pattern across open issues and PRs
+- **Urgent Issue Detection** — surfaces the most-commented open issues ranked by community signal
+- **AI Slop PR Scoring** — flags pull requests with vague descriptions, generic one-word titles, or high file scatter using a heuristic slop score (≥40% = suspicious)
+- **Stale PR Tracker** — identifies open PRs that have gone untouched for more than 7 days
+- **Duplicate Issue Clustering** — groups open issues by title-word overlap to highlight redundant reports you can close in one pass
+- **Slack Context** — pulls recent messages from your workspace alongside GitHub data via a single Coral SQL interface
 
 ---
 
 ## Architecture
 
 ```
-frontend/       Next.js 16 + Tailwind CSS (port 3000)
-backend/        Express API (port 3001)
-  server.js     Triage logic, Coral SQL queries
-  ai.js         Claude API integration
+oss-first-mate/
+├── backend/        Node.js + Express API (port 3001)
+│   ├── server.js   Coral SQL queries, triage heuristics
+│   └── ai.js       Claude API integration
+└── frontend/       Next.js 16 + Tailwind CSS v4 (port 3000)
+    └── app/
+        └── page.tsx  Single-page triage dashboard
 ```
 
-The backend queries Coral's unified SQL layer to fetch GitHub issues, PRs, and Slack messages, then passes the results to Claude for analysis.
+The backend executes Coral SQL queries against GitHub, Slack, and Notion, runs local heuristics, then calls the Claude API for a natural-language health report. The frontend renders results in a tabbed dashboard.
 
 ---
 
 ## Prerequisites
 
-- Node.js 18+
-- [Coral CLI](https://withcoral.com) installed and authenticated
-- An Anthropic API key
+- **Node.js** v18+
+- **[Coral CLI](https://withcoral.com)** — installed, authenticated, and with GitHub/Slack sources configured
+- **Anthropic API key** — get one at [console.anthropic.com](https://console.anthropic.com)
+- **GitHub personal access token** — passed to Coral when adding the GitHub source
+
+---
+
+## Environment Variables
+
+| Variable | Where | Description |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Backend | Anthropic API key used by the Claude SDK |
+| `GITHUB_TOKEN` | Coral config | GitHub PAT with `repo` read scope — set when running `coral source add github` |
+
+Set them in your shell or a `backend/.env` file:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+export GITHUB_TOKEN=ghp_...
+```
+
+> The GitHub token is consumed by the Coral CLI, not loaded directly by the app. Set it before running `coral source add github`.
 
 ---
 
@@ -50,29 +72,22 @@ cd oss-first-mate
 ### 2. Install and configure Coral
 
 ```bash
+# macOS
 brew install withcoral/tap/coral
 
 # Add data sources
-coral source add github
-coral source add slack --interactive
-coral source add notion --interactive
+coral source add github     # prompts for GITHUB_TOKEN
+coral source add slack      # prompts for Slack OAuth
+coral source add notion     # prompts for Notion token (optional)
 ```
 
-### 3. Set environment variables
-
-| Variable | Description |
-|---|---|
-| `ANTHROPIC_API_KEY` | Your Anthropic API key — get one at [console.anthropic.com](https://console.anthropic.com) |
-| `GITHUB_TOKEN` | A GitHub personal access token with `repo` read scope — used by Coral to query GitHub data |
+Verify Coral is working:
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-export GITHUB_TOKEN=ghp_...
+coral sql "SELECT number, title FROM github.issues WHERE owner='vercel' AND repo='next.js' LIMIT 3"
 ```
 
-Add these to your `~/.zshrc` or `~/.bashrc` to persist them across sessions.
-
-### 4. Install dependencies
+### 3. Install dependencies
 
 ```bash
 cd backend && npm install
@@ -86,44 +101,58 @@ cd ../frontend && npm install
 Open two terminals:
 
 **Terminal 1 — Backend**
+
 ```bash
 cd backend
 node server.js
-# Server running on http://localhost:3001
+# Backend running on http://localhost:3001
 ```
 
 **Terminal 2 — Frontend**
+
 ```bash
 cd frontend
 npm run dev
-# App running on http://localhost:3000
+# Frontend running on http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000), enter a GitHub `owner/repo` (e.g. `vercel/next.js`), and click **Triage**.
+Open [http://localhost:3000](http://localhost:3000), enter a GitHub `owner` and `repo` (e.g. `vercel` / `next.js`), and click **Triage**.
 
 ---
 
-## How it works
+## How It Works
 
-1. The frontend sends a `POST /api/triage` with `{ owner, repo }`
-2. The backend runs Coral SQL queries against three sources:
-   - `github.issues` — open issues with comment counts
-   - `github.pulls` — open PRs with file-change metadata
-   - `slack.messages` — recent messages from your configured channel
-3. Local heuristics compute a slop score per PR and cluster duplicate issues by title similarity
-4. The full dataset is sent to Claude (`claude-sonnet-4-5`) which returns a structured JSON health report
-5. The frontend renders everything across five tabs: **Urgent**, **AI Slop**, **Stale**, **Duplicates**, **Slack**
+1. The frontend posts `{ owner, repo }` to `POST /api/triage` on the backend.
+2. The backend fires three Coral SQL queries:
+   - `github.issues` — up to 30 open issues with comment counts
+   - `github.pulls` — up to 20 open PRs with file-change metadata
+   - `slack.messages` — up to 20 recent messages from the configured channel
+3. Local heuristics run over the results:
+   - **Slop scoring** — each PR is scored for vague description, generic title, and high file scatter
+   - **Duplicate clustering** — issues with 2+ overlapping words (>4 chars) in their titles are grouped
+   - **Stale detection** — PRs open more than 7 days are flagged
+   - **Urgency ranking** — issues with >3 comments are surfaced as urgent
+4. All data is sent to Claude (`claude-sonnet-4-5`) which returns a structured JSON health report.
+5. The frontend renders the report across five tabs: **Urgent**, **AI Slop**, **Stale**, **Duplicates**, **Slack**.
 
 ---
 
-## Tech stack
+## Tech Stack
 
 | Layer | Tech |
 |---|---|
 | Frontend | Next.js 16, React 19, Tailwind CSS 4 |
 | Backend | Node.js, Express 5 |
 | Data | [Coral](https://withcoral.com) — SQL over GitHub, Slack, Notion |
-| AI | Anthropic Claude (`claude-sonnet-4-5`) |
+| AI | Anthropic Claude (`claude-sonnet-4-5` via `@anthropic-ai/sdk`) |
+
+---
+
+## Configuration Notes
+
+- **Slack channel** — the backend queries a hardcoded channel ID (`C057H0PF3PG` in `backend/server.js:39`). Replace it with your own Slack channel ID.
+- **Issue/PR limits** — defaults are 30 issues and 20 PRs per query. Adjust the `LIMIT` values in `server.js` if you need broader coverage.
+- **Slop threshold** — PRs with a slop score ≥ 40 are flagged as suspicious. Tune the weights in `server.js:47–51` for your community's norms.
 
 ---
 

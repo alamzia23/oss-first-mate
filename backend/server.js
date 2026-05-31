@@ -1,7 +1,12 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const { execFileSync } = require('child_process');
 const { analyzeWithClaude } = require('./ai');
+
+const PORT = process.env.PORT || 3001;
+const SLACK_CHANNEL_ID = process.env.SLACK_CHANNEL_ID || 'C057H0PF3PG';
 
 const app = express();
 app.use(cors());
@@ -20,6 +25,22 @@ function coralQuery(sql) {
   }
 }
 
+// For optional sources (Slack, Notion) — returns { data, connected }
+// so the frontend can distinguish "not configured" from "empty".
+function optionalCoralQuery(sql, sourceName) {
+  try {
+    const result = execFileSync('coral', ['sql', '--format', 'json', sql], {
+      encoding: 'utf8',
+      timeout: 30000
+    });
+    const data = JSON.parse(result);
+    return { data: Array.isArray(data) ? data : [], connected: true };
+  } catch (err) {
+    console.error(`${sourceName} Coral query failed (source may not be configured):`, err.message);
+    return { data: [], connected: false };
+  }
+}
+
 app.post('/api/triage', async (req, res) => {
   const { owner, repo } = req.body;
   if (!owner || !repo) return res.status(400).json({ error: 'owner and repo are required' });
@@ -35,11 +56,13 @@ app.post('/api/triage', async (req, res) => {
       `SELECT number, title, body, user__login, created_at, changed_files FROM github.pulls WHERE owner='${owner}' AND repo='${repo}' AND state='open' LIMIT 20`
     );
 
-    const slackMessages = coralQuery(
-      `SELECT text, user_id, ts FROM slack.messages WHERE channel = 'C057H0PF3PG' LIMIT 20`
+    const slack = optionalCoralQuery(
+      `SELECT text, user_id, ts FROM slack.messages WHERE channel = '${SLACK_CHANNEL_ID}' LIMIT 20`,
+      'Slack'
     );
+    const slackMessages = slack.data;
 
-    console.log(`Got ${issues.length} issues, ${prs.length} PRs, ${slackMessages.length} Slack messages`);
+    console.log(`Got ${issues.length} issues, ${prs.length} PRs, ${slackMessages.length} Slack messages (connected: ${slack.connected})`);
 
     const analyzedPRs = prs.map(pr => {
       let slopScore = 0;
@@ -97,7 +120,8 @@ app.post('/api/triage', async (req, res) => {
       suspicious: analyzedPRs.filter(p => p.isSuspicious),
       stale: stalePRs,
       duplicates: duplicateClusters,
-      slack: slackMessages
+      slack: slackMessages,
+      slackConnected: slack.connected
     });
 
   } catch (err) {
@@ -108,4 +132,4 @@ app.post('/api/triage', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
-app.listen(3001, () => console.log('🚀 OSS First Mate backend running on http://localhost:3001'));
+app.listen(PORT, () => console.log(`🚀 OSS First Mate backend running on http://localhost:${PORT}`));
